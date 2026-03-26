@@ -6,6 +6,7 @@ const XLSX = require('xlsx');
 const PAUSA_ENTRE_GRUPOS_MS = 45_000;
 const MAX_NOMBRE_GRUPO = 100;
 const ARCHIVO_EXCEL = 'materias.xlsx';
+const REPORTE_EXCEL = 'Reporte_Materias.xlsx';
 
 const esperar = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -31,6 +32,14 @@ function leerExcel() {
   } catch (err) {
     throw new Error(`No se pudo abrir "${ARCHIVO_EXCEL}": ${err.message}`);
   }
+}
+
+function guardarReporte(filas) {
+  const ws = XLSX.utils.json_to_sheet(filas);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Reporte');
+  XLSX.writeFile(wb, REPORTE_EXCEL);
+  console.log(`📁 Reporte guardado: ${REPORTE_EXCEL}`);
 }
 
 const client = new Client({
@@ -79,8 +88,9 @@ client.on('ready', async () => {
 
   for (let i = 0; i < filas.length; i++) {
     const fila = filas[i];
-    const nombreGrupo = generarNombreGrupo(fila);
+    fila.Estado = '';
 
+    const nombreGrupo = generarNombreGrupo(fila);
     const numeroDocente = formatearTelefono(fila.TelefonoDocente);
     const numeroBecario = formatearTelefono(fila.TelefonoBecario);
 
@@ -98,6 +108,7 @@ client.on('ready', async () => {
 
     if (participantes.length === 0) {
       console.log('   ⚠️ No hay participantes válidos. Saltando...');
+      fila.Estado = '❌ Error: Sin participantes válidos';
       fallidos++;
       continue;
     }
@@ -107,12 +118,34 @@ client.on('ready', async () => {
       const grupo = await client.createGroup(nombreGrupo, participantes);
       const grupoId = grupo.gid._serialized;
 
+      let docenteBloqueado = false;
+
+      if (numeroDocente && grupo.gpisMissingParticipants?.includes(numeroDocente)) {
+        console.log('   ⚠️ Docente no pudo ser añadido (privacidad)');
+        docenteBloqueado = true;
+      }
+
       console.log('   ⏳ Esperando 3s para promoción...');
       await esperar(3000);
 
       console.log('   🔝 Promoviendo a administradores...');
       const chat = await client.getChatById(grupoId);
       await chat.promoteParticipants(participantes);
+
+      if (docenteBloqueado && numeroBecario) {
+        console.log('   🔗 Generando link de invitación...');
+        const inviteCode = await chat.getInviteCode();
+        const linkInvitacion = `https://chat.whatsapp.com/${inviteCode}`;
+
+        console.log('   📤 Enviando link al becario...');
+        const mensaje = `⚠️ Hola. El bot no pudo añadir al docente de la materia ${fila.Materia} por su configuración de privacidad. Por favor, pásale este link oficial para que se una: ${linkInvitacion}`;
+        await client.sendMessage(numeroBecario, mensaje);
+
+        fila.Estado = '⚠️ Creado (Docente bloqueó añadir. Link enviado al becario)';
+        console.log('   ✅ Link enviado al becario.');
+      } else {
+        fila.Estado = '✅ Creado y Admin';
+      }
 
       console.log('   ⏳ Esperando 2s para salir del grupo...');
       await esperar(2000);
@@ -124,6 +157,7 @@ client.on('ready', async () => {
       creados++;
     } catch (err) {
       console.log(`   ❌ Error: ${err.message}`);
+      fila.Estado = `❌ Error: ${err.message}`;
       fallidos++;
     }
 
@@ -132,6 +166,9 @@ client.on('ready', async () => {
       await new Promise((resolve) => setTimeout(resolve, PAUSA_ENTRE_GRUPOS_MS));
     }
   }
+
+  console.log('\n📁 Generando reporte...');
+  guardarReporte(filas);
 
   console.log('\n' + '═'.repeat(60));
   console.log('📊 RESUMEN FINAL:');
