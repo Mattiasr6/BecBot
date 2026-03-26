@@ -1,8 +1,9 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const XLSX = require('xlsx');
 
+const PERIODO_ACTUAL = "Marzo-2026 (MOD II/I)";
 const PAUSA_ENTRE_GRUPOS_MS = 45_000;
 const MAX_NOMBRE_GRUPO = 100;
 const ARCHIVO_EXCEL = 'materias.xlsx';
@@ -125,11 +126,31 @@ client.on('ready', async () => {
         docenteBloqueado = true;
       }
 
+      console.log('   ⏳ Obteniendo chat...');
+      const chat = await client.getChatById(grupoId);
+
+      try {
+        console.log('   🖼️ Estableciendo foto de perfil...');
+        const media = MessageMedia.fromFilePath('./logo.jpg');
+        await chat.setPicture(media);
+      } catch (err) {
+        console.log('   ⚠️ No se pudo establecer foto de perfil (logo.jpg no encontrado)');
+      }
+
+      console.log('   📝 Estableciendo descripción...');
+      const descripcion = `📅 Periodo: ${PERIODO_ACTUAL}
+📚 Materia: ${fila.Materia}
+⏰ Turno: ${fila.Turno}
+🏫 Aula: ${fila.Aula}
+👨‍🏫 Docente: ${fila.Docente}
+
+⚠️ Este es el grupo oficial administrado por el Programa de Becarios. Mantengamos el respeto y el enfoque académico.`;
+      await chat.setDescription(descripcion);
+
       console.log('   ⏳ Esperando 3s para promoción...');
       await esperar(3000);
 
       console.log('   🔝 Promoviendo a administradores...');
-      const chat = await client.getChatById(grupoId);
       await chat.promoteParticipants(participantes);
 
       if (docenteBloqueado && numeroBecario) {
