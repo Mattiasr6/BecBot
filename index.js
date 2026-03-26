@@ -90,6 +90,7 @@ client.on('ready', async () => {
   for (let i = 0; i < filas.length; i++) {
     const fila = filas[i];
     fila.Estado = '';
+    fila.LinkInvitacion = '';
 
     const nombreGrupo = generarNombreGrupo(fila);
     const numeroDocente = formatearTelefono(fila.TelefonoDocente);
@@ -153,11 +154,15 @@ client.on('ready', async () => {
       console.log('   🔝 Promoviendo a administradores...');
       await chat.promoteParticipants(participantes);
 
-      if (docenteBloqueado && numeroBecario) {
-        console.log('   🔗 Generando link de invitación...');
-        const inviteCode = await chat.getInviteCode();
-        const linkInvitacion = `https://chat.whatsapp.com/${inviteCode}`;
+      console.log('   🔗 Obteniendo link de invitación...');
+      const inviteCode = await chat.getInviteCode();
+      const linkInvitacion = `https://chat.whatsapp.com/${inviteCode}`;
+      fila.LinkInvitacion = linkInvitacion;
 
+      console.log('   🔒 Aplicando blindaje Anti-Trolls...');
+      await chat.setInfoAdminsOnly(true);
+
+      if (docenteBloqueado && numeroBecario) {
         console.log('   📤 Enviando link al becario...');
         const mensaje = `⚠️ Hola. El bot no pudo añadir al docente de la materia ${fila.Materia} por su configuración de privacidad. Por favor, pásale este link oficial para que se una: ${linkInvitacion}`;
         await client.sendMessage(numeroBecario, mensaje);
@@ -179,6 +184,7 @@ client.on('ready', async () => {
     } catch (err) {
       console.log(`   ❌ Error: ${err.message}`);
       fila.Estado = `❌ Error: ${err.message}`;
+      fila.LinkInvitacion = '-';
       fallidos++;
     }
 
