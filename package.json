@@ -1,7 +1,7 @@
 {
   "name": "becbot",
   "version": "1.0.0",
-  "description": "Bot para crear grupos de WhatsApp automáticamente desde un CSV",
+  "description": "Bot para crear grupos de WhatsApp automáticamente desde un Excel",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -17,6 +17,7 @@
   "dependencies": {
     "csv-parser": "^3.2.0",
     "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.34.6"
+    "whatsapp-web.js": "^1.34.6",
+    "xlsx": "^0.18.5"
   }
 }

@@ -1,15 +1,15 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
-const csv = require('csv-parser');
+const XLSX = require('xlsx');
 
 // ─────────────────────────────────────────────
 //  🤖 BecBot — Creador automático de grupos WA
 // ─────────────────────────────────────────────
 
-const PAUSA_ENTRE_GRUPOS_MS = 25_000; // 25 segundos anti-ban
+const PAUSA_ENTRE_GRUPOS_MS = 45_000; // 45 segundos anti-ban
 const MAX_NOMBRE_GRUPO = 100;
-const ARCHIVO_CSV = 'materias.csv';
+const ARCHIVO_EXCEL = 'materias.xlsx';
 
 // ── Utilidades ───────────────────────────────
 
@@ -46,18 +46,16 @@ function generarNombreGrupo({ Materia, Turno, Aula }) {
  * Lee el archivo CSV y devuelve un array de filas.
  * @returns {Promise<Array>} Filas del CSV parseadas.
  */
-function leerCSV() {
-  return new Promise((resolve, reject) => {
-    const filas = [];
-    fs.createReadStream(ARCHIVO_CSV)
-      .on('error', (err) => {
-        reject(new Error(`❌ No se pudo abrir "${ARCHIVO_CSV}": ${err.message}`));
-      })
-      .pipe(csv())
-      .on('data', (fila) => filas.push(fila))
-      .on('end', () => resolve(filas))
-      .on('error', (err) => reject(err));
-  });
+function leerExcel() {
+  try {
+    const workbook = XLSX.readFile(ARCHIVO_EXCEL);
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const filas = XLSX.utils.sheet_to_json(worksheet);
+    return filas;
+  } catch (err) {
+    throw new Error(`❌ No se pudo abrir "${ARCHIVO_EXCEL}": ${err.message}`);
+  }
 }
 
 // ── Cliente de WhatsApp ──────────────────────
@@ -92,18 +90,18 @@ client.on('ready', async () => {
 
   let filas;
   try {
-    filas = await leerCSV();
+    filas = leerExcel();
   } catch (err) {
     console.error(err.message);
     process.exit(1);
   }
 
   if (filas.length === 0) {
-    console.log('⚠️ El archivo CSV está vacío. No hay grupos por crear.');
+    console.log('⚠️ El archivo Excel está vacío. No hay grupos por crear.');
     process.exit(0);
   }
 
-  console.log(`📋 Se encontraron ${filas.length} materias en el CSV.\n`);
+  console.log(`📋 Se encontraron ${filas.length} materias en el Excel.\n`);
   console.log('═'.repeat(60));
 
   let creados = 0;
@@ -135,10 +133,10 @@ client.on('ready', async () => {
       fallidos++;
     }
 
-    // ── Escudo Anti-Ban: pausa de 25 segundos ──
+    // ── Escudo Anti-Ban: pausa de 45 segundos ──
     if (i < filas.length - 1) {
       console.log(`   ⏳ Esperando ${PAUSA_ENTRE_GRUPOS_MS / 1000}s antes del siguiente grupo...`);
-      await esperar(PAUSA_ENTRE_GRUPOS_MS);
+      await new Promise((resolve) => setTimeout(resolve, PAUSA_ENTRE_GRUPOS_MS));
     }
   }
 
