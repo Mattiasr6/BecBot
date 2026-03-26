@@ -3,38 +3,17 @@ const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const XLSX = require('xlsx');
 
-// ─────────────────────────────────────────────
-//  🤖 BecBot — Creador automático de grupos WA
-// ─────────────────────────────────────────────
-
-const PAUSA_ENTRE_GRUPOS_MS = 45_000; // 45 segundos anti-ban
+const PAUSA_ENTRE_GRUPOS_MS = 45_000;
 const MAX_NOMBRE_GRUPO = 100;
 const ARCHIVO_EXCEL = 'materias.xlsx';
 
-// ── Utilidades ───────────────────────────────
-
-/**
- * Pausa obligatoria envuelta en una Promesa.
- * @param {number} ms - Milisegundos a esperar.
- */
 const esperar = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Limpia el número de teléfono y lo convierte al formato de WhatsApp.
- * Quita +, espacios y guiones, luego agrega @c.us
- * @param {string} telefono - Número crudo del CSV.
- * @returns {string} Número formateado (ej: 59171644140@c.us)
- */
 function formatearTelefono(telefono) {
-  return telefono.replace(/[\s\-\+]/g, '') + '@c.us';
+  if (!telefono) return null;
+  return String(telefono).replace(/[\s\-\+]/g, '') + '@c.us';
 }
 
-/**
- * Genera el nombre del grupo concatenando Materia, Turno y Aula.
- * Si supera los 100 caracteres, lo recorta.
- * @param {object} fila - Fila del CSV con Materia, Turno, Aula.
- * @returns {string} Nombre del grupo (máx. 100 caracteres).
- */
 function generarNombreGrupo({ Materia, Turno, Aula }) {
   const nombre = `${Materia.trim()} - ${Turno.trim()} - ${Aula.trim()}`;
   return nombre.length > MAX_NOMBRE_GRUPO
@@ -42,10 +21,6 @@ function generarNombreGrupo({ Materia, Turno, Aula }) {
     : nombre;
 }
 
-/**
- * Lee el archivo CSV y devuelve un array de filas.
- * @returns {Promise<Array>} Filas del CSV parseadas.
- */
 function leerExcel() {
   try {
     const workbook = XLSX.readFile(ARCHIVO_EXCEL);
@@ -54,11 +29,9 @@ function leerExcel() {
     const filas = XLSX.utils.sheet_to_json(worksheet);
     return filas;
   } catch (err) {
-    throw new Error(`❌ No se pudo abrir "${ARCHIVO_EXCEL}": ${err.message}`);
+    throw new Error(`No se pudo abrir "${ARCHIVO_EXCEL}": ${err.message}`);
   }
 }
-
-// ── Cliente de WhatsApp ──────────────────────
 
 const client = new Client({
   authStrategy: new LocalAuth(),
@@ -68,7 +41,6 @@ const client = new Client({
   },
 });
 
-// Mostrar QR en la terminal para autenticarse
 client.on('qr', (qr) => {
   console.log('\n📱 Escanea este código QR con WhatsApp:\n');
   qrcode.generate(qr, { small: true });
@@ -82,8 +54,6 @@ client.on('auth_failure', (msg) => {
   console.error('❌ Falló la autenticación:', msg);
   process.exit(1);
 });
-
-// ── Lógica principal al estar listo ──────────
 
 client.on('ready', async () => {
   console.log('🟢 WhatsApp Web conectado y listo.\n');
@@ -110,37 +80,59 @@ client.on('ready', async () => {
   for (let i = 0; i < filas.length; i++) {
     const fila = filas[i];
     const nombreGrupo = generarNombreGrupo(fila);
-    const telefono = formatearTelefono(fila.Telefono);
+
+    const numeroDocente = formatearTelefono(fila.TelefonoDocente);
+    const numeroBecario = formatearTelefono(fila.TelefonoBecario);
 
     console.log(`\n[${i + 1}/${filas.length}] Creando grupo: "${nombreGrupo}"`);
-    console.log(`   👤 Docente: ${fila.Docente} (${telefono})`);
+
+    const participantes = [];
+    if (numeroDocente) {
+      console.log(`   👨‍🏫 Docente: ${fila.Docente} (${numeroDocente})`);
+      participantes.push(numeroDocente);
+    }
+    if (numeroBecario) {
+      console.log(`   👨‍💻 Becario: ${fila.TelefonoBecario}`);
+      participantes.push(numeroBecario);
+    }
+
+    if (participantes.length === 0) {
+      console.log('   ⚠️ No hay participantes válidos. Saltando...');
+      fallidos++;
+      continue;
+    }
 
     try {
-      const grupo = await client.createGroup(nombreGrupo, [telefono]);
+      console.log('   🔄 Creando grupo...');
+      const grupo = await client.createGroup(nombreGrupo, participantes);
+      const grupoId = grupo.gid._serialized;
 
-      // Verificar si hubo participantes que no se pudieron agregar
-      if (grupo.gpisMissingParticipants && grupo.gpisMissingParticipants.length > 0) {
-        console.log(`   ⚠️ Falló al añadir al docente en ${fila.Materia}, hazlo manual`);
-        console.log(`   ✅ Grupo creado (sin docente).`);
-      } else {
-        console.log(`   ✅ Grupo creado exitosamente con el docente.`);
-      }
+      console.log('   ⏳ Esperando 3s para promoción...');
+      await esperar(3000);
 
+      console.log('   🔝 Promoviendo a administradores...');
+      const chat = await client.getChatById(grupoId);
+      await chat.promoteParticipants(participantes);
+
+      console.log('   ⏳ Esperando 2s para salir del grupo...');
+      await esperar(2000);
+
+      console.log('   🚪 Saliendo del grupo (Operación Fantasma)...');
+      await chat.leave();
+
+      console.log('   ✅ Grupo creado con admins y bot keluar.');
       creados++;
     } catch (err) {
-      console.log(`   ⚠️ Falló al añadir al docente en ${fila.Materia}, hazlo manual`);
-      console.log(`   💬 Error: ${err.message}`);
+      console.log(`   ❌ Error: ${err.message}`);
       fallidos++;
     }
 
-    // ── Escudo Anti-Ban: pausa de 45 segundos ──
     if (i < filas.length - 1) {
-      console.log(`   ⏳ Esperando ${PAUSA_ENTRE_GRUPOS_MS / 1000}s antes del siguiente grupo...`);
+      console.log(`   ⏳ Esperando ${PAUSA_ENTRE_GRUPOS_MS / 1000}s anti-ban...`);
       await new Promise((resolve) => setTimeout(resolve, PAUSA_ENTRE_GRUPOS_MS));
     }
   }
 
-  // ── Resumen final ──────────────────────────
   console.log('\n' + '═'.repeat(60));
   console.log('📊 RESUMEN FINAL:');
   console.log(`   ✅ Grupos creados: ${creados}`);
@@ -152,7 +144,6 @@ client.on('ready', async () => {
   process.exit(0);
 });
 
-// ── Arrancar el cliente ──────────────────────
 console.log('🚀 Iniciando BecBot...');
 console.log('⏳ Conectando con WhatsApp Web (esto puede tardar unos segundos)...\n');
 client.initialize();
