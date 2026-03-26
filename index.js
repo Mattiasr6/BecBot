@@ -1,15 +1,25 @@
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const XLSX = require('xlsx');
 
 const PERIODO_ACTUAL = "Marzo-2026 (MOD II/I)";
-const PAUSA_ENTRE_GRUPOS_MS = 45_000;
+const PAUSA_ENTRE_GRUPOS_MS = 60_000;
 const MAX_NOMBRE_GRUPO = 100;
 const ARCHIVO_EXCEL = 'materias.xlsx';
 const REPORTE_EXCEL = 'Reporte_Materias.xlsx';
 
-const esperar = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let filas = [];
+
+process.on('uncaughtException', (err) => {
+  console.error('💥 Error no capturado:', err.message);
+  guardarReporte(filas);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('💥 Promesa rechazada:', reason);
+  guardarReporte(filas);
+});
 
 function formatearTelefono(telefono) {
   if (!telefono) return null;
@@ -17,7 +27,7 @@ function formatearTelefono(telefono) {
 }
 
 function generarNombreGrupo({ Materia, Turno, Aula }) {
-  const nombre = `${Materia.trim()} - ${Turno.trim()} - ${Aula.trim()}`;
+  const nombre = `${String(Materia).trim()} - ${String(Turno).trim()} - ${String(Aula).trim()}`;
   return nombre.length > MAX_NOMBRE_GRUPO
     ? nombre.substring(0, MAX_NOMBRE_GRUPO)
     : nombre;
@@ -28,19 +38,32 @@ function leerExcel() {
     const workbook = XLSX.readFile(ARCHIVO_EXCEL);
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
-    const filas = XLSX.utils.sheet_to_json(worksheet);
-    return filas;
+    const filas = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+    return filas.map((fila) => {
+      const filaLimpia = {};
+      for (const key of Object.keys(fila)) {
+        const claveLimpia = key.trim();
+        const valor = fila[key];
+        filaLimpia[claveLimpia] = typeof valor === 'string' ? valor.trim() : valor;
+      }
+      return filaLimpia;
+    });
   } catch (err) {
     throw new Error(`No se pudo abrir "${ARCHIVO_EXCEL}": ${err.message}`);
   }
 }
 
 function guardarReporte(filas) {
-  const ws = XLSX.utils.json_to_sheet(filas);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Reporte');
-  XLSX.writeFile(wb, REPORTE_EXCEL);
-  console.log(`📁 Reporte guardado: ${REPORTE_EXCEL}`);
+  if (!filas || filas.length === 0) return;
+  try {
+    const ws = XLSX.utils.json_to_sheet(filas);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Reporte');
+    XLSX.writeFile(wb, REPORTE_EXCEL);
+    console.log(`📁 Reporte guardado: ${REPORTE_EXCEL}`);
+  } catch (err) {
+    console.error('Error guardando reporte:', err.message);
+  }
 }
 
 const client = new Client({
@@ -53,7 +76,7 @@ const client = new Client({
 
 client.on('qr', (qr) => {
   console.log('\n📱 Escanea este código QR con WhatsApp:\n');
-  qrcode.generate(qr, { small: true });
+  require('qrcode-terminal').generate(qr, { small: true });
 });
 
 client.on('authenticated', () => {
@@ -62,17 +85,24 @@ client.on('authenticated', () => {
 
 client.on('auth_failure', (msg) => {
   console.error('❌ Falló la autenticación:', msg);
+  guardarReporte(filas);
+  process.exit(1);
+});
+
+client.on('disconnected', (reason) => {
+  console.log('⚠️ Conexión perdida:', reason);
+  guardarReporte(filas);
   process.exit(1);
 });
 
 client.on('ready', async () => {
   console.log('🟢 WhatsApp Web conectado y listo.\n');
 
-  let filas;
   try {
     filas = leerExcel();
   } catch (err) {
     console.error(err.message);
+    guardarReporte(filas);
     process.exit(1);
   }
 
@@ -89,101 +119,107 @@ client.on('ready', async () => {
 
   for (let i = 0; i < filas.length; i++) {
     const fila = filas[i];
-    fila.Estado = '';
-    fila.LinkInvitacion = '';
+    fila.Estado = fila.Estado || '';
+    fila.LinkInvitacion = fila.LinkInvitacion || '';
 
     const nombreGrupo = generarNombreGrupo(fila);
     const numeroDocente = formatearTelefono(fila.TelefonoDocente);
     const numeroBecario = formatearTelefono(fila.TelefonoBecario);
 
+    const estadosExito = ['✅ Creado y Admin', '⚠️ Creado (Docente bloqueó añadir. Link enviado al becario)'];
+    if (estadosExito.includes(fila.Estado)) {
+      console.log(`\n⏩ Saltando "${nombreGrupo}" - Ya procesado anteriormente.`);
+      continue;
+    }
+
     console.log(`\n[${i + 1}/${filas.length}] Creando grupo: "${nombreGrupo}"`);
 
-    const participantes = [];
-    if (numeroDocente) {
-      console.log(`   👨‍🏫 Docente: ${fila.Docente} (${numeroDocente})`);
-      participantes.push(numeroDocente);
-    }
-    if (numeroBecario) {
-      console.log(`   👨‍💻 Becario: ${fila.TelefonoBecario}`);
-      participantes.push(numeroBecario);
-    }
+    const participantesRaw = [numeroDocente, numeroBecario].filter(Boolean);
+    const participantes = participantesRaw.map(p => p.includes('@c.us') ? p : p + '@c.us');
 
     if (participantes.length === 0) {
-      console.log('   ⚠️ No hay participantes válidos. Saltando...');
-      fila.Estado = '❌ Error: Sin participantes válidos';
+      console.log('   ⚠️ Sin participantes válidos. Saltando...');
+      fila.Estado = '❌ Sin participantes';
       fallidos++;
       continue;
     }
 
+    console.log('   👨‍🏫 Docente:', numeroDocente || 'N/A');
+    console.log('   👨‍💻 Becario:', numeroBecario || 'N/A');
+
     try {
       console.log('   🔄 Creando grupo...');
       const grupo = await client.createGroup(nombreGrupo, participantes);
+
+      if (!grupo || !grupo.gid) {
+        console.log('   ❌ Error: createGroup no devolvió gid (Rate Limit?)');
+        fila.Estado = '❌ Rate Limit';
+        fila.LinkInvitacion = '-';
+        fallidos++;
+        continue;
+      }
+
       const grupoId = grupo.gid._serialized;
+      console.log('   ✅ Grupo creado:', grupoId);
 
       let docenteBloqueado = false;
-
       if (numeroDocente && grupo.gpisMissingParticipants?.includes(numeroDocente)) {
-        console.log('   ⚠️ Docente no pudo ser añadido (privacidad)');
+        console.log('   ⚠️ Docente no añadido (privacidad)');
         docenteBloqueado = true;
       }
 
-      console.log('   ⏳ Obteniendo chat...');
+      const descripcion = `📚 Materia: ${fila.Materia}
+👨‍🏫 Docente: ${fila.Docente}
+🕒 Turno: ${fila.Turno}
+🏫 Aula: ${fila.Aula}
+
+Grupo oficial - Universidad`;
+
+      console.log('   📤 Enviando información...');
+      await client.sendMessage(grupoId, `*📌 INFORMACIÓN DE LA MATERIA:*\n\n${descripcion}`);
+
       const chat = await client.getChatById(grupoId);
 
+      console.log('   🔝 Promoviendo a admins...');
       try {
-        console.log('   🖼️ Estableciendo foto de perfil...');
-        const media = MessageMedia.fromFilePath('./logo.jpg');
-        await chat.setPicture(media);
+        await chat.promoteParticipants(participantes);
       } catch (err) {
-        console.log('   ⚠️ No se pudo establecer foto de perfil (logo.jpg no encontrado)');
+        console.log('   ⚠️ Error promoviendo:', err.message);
       }
 
-      console.log('   📝 Estableciendo descripción...');
-      const descripcion = `📅 Periodo: ${PERIODO_ACTUAL}
-📚 Materia: ${fila.Materia}
-⏰ Turno: ${fila.Turno}
-🏫 Aula: ${fila.Aula}
-👨‍🏫 Docente: ${fila.Docente}
-
-⚠️ Este es el grupo oficial administrado por el Programa de Becarios. Mantengamos el respeto y el enfoque académico.`;
-      await chat.setDescription(descripcion);
-
-      console.log('   ⏳ Esperando 3s para promoción...');
-      await esperar(3000);
-
-      console.log('   🔝 Promoviendo a administradores...');
-      await chat.promoteParticipants(participantes);
-
-      console.log('   🔗 Obteniendo link de invitación...');
-      const inviteCode = await chat.getInviteCode();
-      const linkInvitacion = `https://chat.whatsapp.com/${inviteCode}`;
-      fila.LinkInvitacion = linkInvitacion;
+      let linkInvitacion = '-';
+      try {
+        const inviteCode = await chat.getInviteCode();
+        linkInvitacion = `https://chat.whatsapp.com/${inviteCode}`;
+        fila.LinkInvitacion = linkInvitacion;
+      } catch (err) {
+        console.log('   ⚠️ Error obteniendo link:', err.message);
+      }
 
       console.log('   🔒 Aplicando blindaje Anti-Trolls...');
-      await chat.setInfoAdminsOnly(true);
+      try {
+        await chat.setInfoAdminsOnly(true);
+      } catch (err) {
+        console.log('   ⚠️ Error blindaje:', err.message);
+      }
 
-      if (docenteBloqueado && numeroBecario) {
-        console.log('   📤 Enviando link al becario...');
-        const mensaje = `⚠️ Hola. El bot no pudo añadir al docente de la materia ${fila.Materia} por su configuración de privacidad. Por favor, pásale este link oficial para que se una: ${linkInvitacion}`;
+      if (docenteBloqueado && numeroBecario && linkInvitacion !== '-') {
+        const mensaje = `⚠️ El docente de ${fila.Materia} no pudo ser añadido. Pásale este link:\n${linkInvitacion}`;
         await client.sendMessage(numeroBecario, mensaje);
-
-        fila.Estado = '⚠️ Creado (Docente bloqueó añadir. Link enviado al becario)';
-        console.log('   ✅ Link enviado al becario.');
+        fila.Estado = '⚠️ Creado (Docente bloqueó)';
       } else {
         fila.Estado = '✅ Creado y Admin';
       }
 
-      console.log('   ⏳ Esperando 2s para salir del grupo...');
-      await esperar(2000);
-
-      console.log('   🚪 Saliendo del grupo (Operación Fantasma)...');
+      console.log('   🚪 Saliendo del grupo...');
       await chat.leave();
 
-      console.log('   ✅ Grupo creado con admins y bot keluar.');
+      console.log('   ✅ Completado');
       creados++;
+
     } catch (err) {
-      console.log(`   ❌ Error: ${err.message}`);
-      fila.Estado = `❌ Error: ${err.message}`;
+      console.log('   ❌ Error:', err.message);
+      fila.Estado = `❌ ${err.message}`;
       fila.LinkInvitacion = '-';
       fallidos++;
     }
@@ -194,7 +230,6 @@ client.on('ready', async () => {
     }
   }
 
-  console.log('\n📁 Generando reporte...');
   guardarReporte(filas);
 
   console.log('\n' + '═'.repeat(60));
@@ -203,11 +238,11 @@ client.on('ready', async () => {
   console.log(`   ❌ Fallidos:       ${fallidos}`);
   console.log(`   📋 Total:          ${filas.length}`);
   console.log('═'.repeat(60));
-  console.log('\n🏁 Proceso finalizado. Puedes cerrar esta terminal.');
+  console.log('\n🏁 Proceso finalizado.');
 
   process.exit(0);
 });
 
 console.log('🚀 Iniciando BecBot...');
-console.log('⏳ Conectando con WhatsApp Web (esto puede tardar unos segundos)...\n');
+console.log('⏳ Conectando con WhatsApp Web...\n');
 client.initialize();
